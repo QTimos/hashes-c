@@ -273,14 +273,14 @@ static bool _resize_table(tHashTable *table)
 {
 	if (table->size > SIZE_MAX / 2)
 	{
-		*(_HERROR) = RESIZE_ERROR;
+		HERROR = RESIZE_ERROR;
 		return false;
 	}
 	size_t new_size = table->size * 2;
 	tNode **new_buckets = (tNode **)calloc(new_size, sizeof(tNode *));
 	if (!new_buckets)
 	{
-		*(_HERROR) = RESIZE_ERROR;
+		HERROR = RESIZE_ERROR;
 		return false;
 	}
 	_refresh_nodes(table, new_buckets, new_size);
@@ -342,11 +342,11 @@ static void ht_print_item(tHTType type, size_t elem_size,
 bool ht_insert(tHashTable *self, const void *key, size_t key_len,
                const void *value, size_t value_len)
 {
-	*(_HERROR) = SUCCESS;
-	if (!self)                { *(_HERROR) = NULL_TABLE_ERROR;       return false; }
-	if (!key || !key_len)     { *(_HERROR) = NULL_KEY_ERROR;         return false; }
-	if (!value || !value_len) { *(_HERROR) = NULL_VALUE_ERROR;       return false; }
-	if (!self->size)          { *(_HERROR) = DIVBYZERO_INSERT_ERROR; return false; }
+	HERROR = SUCCESS;
+	if (!self)                { HERROR = NULL_TABLE_ERROR;       return false; }
+	if (!key || !key_len)     { HERROR = NULL_KEY_ERROR;         return false; }
+	if (!value || !value_len) { HERROR = NULL_VALUE_ERROR;       return false; }
+	if (!self->size)          { HERROR = DIVBYZERO_INSERT_ERROR; return false; }
 
 	uint32_t index;
 	tNode *new_node;
@@ -367,7 +367,7 @@ bool ht_insert(tHashTable *self, const void *key, size_t key_len,
 			void *tmp_val = _duplicate_val(value, value_len, self->node_val_type_size);
 			if (!tmp_val)
 			{
-				*(_HERROR) = DUP_ERROR;
+				HERROR = DUP_ERROR;
 				return false;
 			}
 			free(node->value);
@@ -381,14 +381,14 @@ bool ht_insert(tHashTable *self, const void *key, size_t key_len,
 	new_node = (tNode *)malloc(sizeof(tNode));
 	if (!new_node)
 	{
-		*(_HERROR) = INSERT_ERROR;
+		HERROR = INSERT_ERROR;
 		return false;
 	}
 	new_node->key = _duplicate_val(key, key_len, self->node_key_type_size);
 	if (!new_node->key)
 	{
 		free(new_node);
-		*(_HERROR) = DUP_ERROR;
+		HERROR = DUP_ERROR;
 		return false;
 	}
 	new_node->value = _duplicate_val(value, value_len, self->node_val_type_size);
@@ -396,7 +396,7 @@ bool ht_insert(tHashTable *self, const void *key, size_t key_len,
 	{
 		free((void *)new_node->key);
 		free(new_node);
-		*(_HERROR) = DUP_ERROR;
+		HERROR = DUP_ERROR;
 		return false;
 	}
 	new_node->key_len = key_len;
@@ -409,10 +409,10 @@ bool ht_insert(tHashTable *self, const void *key, size_t key_len,
 
 void* ht_get(tHashTable *self, const void *key, size_t key_len)
 {
-	*(_HERROR) = SUCCESS;
-	if (!self)            { *(_HERROR) = NULL_TABLE_ERROR;       return NULL; }
-	if (!key || !key_len) { *(_HERROR) = NULL_KEY_ERROR;         return NULL; }
-	if (!self->size)      { *(_HERROR) = DIVBYZERO_INSERT_ERROR; return NULL; }
+	HERROR = SUCCESS;
+	if (!self)            { HERROR = NULL_TABLE_ERROR;       return NULL; }
+	if (!key || !key_len) { HERROR = NULL_KEY_ERROR;         return NULL; }
+	if (!self->size)      { HERROR = DIVBYZERO_INSERT_ERROR; return NULL; }
 
 	uint32_t index = _hash(key, key_len * self->node_key_type_size, self->size);
 	tNode *node = self->buckets[index];
@@ -424,16 +424,16 @@ void* ht_get(tHashTable *self, const void *key, size_t key_len)
 			return node->value;
 		node = node->next;
 	}
-	*(_HERROR) = KEY_ERROR;
+	HERROR = KEY_ERROR;
 	return NULL;
 }
 
 bool ht_delete(tHashTable *self, const void *key, size_t key_len)
 {
-	*(_HERROR) = SUCCESS;
-	if (!self)            { *(_HERROR) = NULL_TABLE_ERROR;       return false; }
-	if (!key || !key_len) { *(_HERROR) = NULL_KEY_ERROR;         return false; }
-	if (!self->size)      { *(_HERROR) = DIVBYZERO_INSERT_ERROR; return false; }
+	HERROR = SUCCESS;
+	if (!self)            { HERROR = NULL_TABLE_ERROR;       return false; }
+	if (!key || !key_len) { HERROR = NULL_KEY_ERROR;         return false; }
+	if (!self->size)      { HERROR = DIVBYZERO_INSERT_ERROR; return false; }
 
 	uint32_t index = _hash(key, key_len * self->node_key_type_size, self->size);
 	tNode *curr = self->buckets[index];
@@ -457,14 +457,14 @@ bool ht_delete(tHashTable *self, const void *key, size_t key_len)
 		prev = curr;
 		curr = curr->next;
 	}
-	*(_HERROR) = KEY_ERROR;
+	HERROR = KEY_ERROR;
 	return false;
 }
 
 void ht_print(tHashTable *table)
 {
-	*(_HERROR) = SUCCESS;
-	if (!table) { *(_HERROR) = NULL_TABLE_ERROR; return; }
+	HERROR = SUCCESS;
+	if (!table) { HERROR = NULL_TABLE_ERROR; return; }
 
 	printf("HashTable(size=%zu, count=%zu)\n", table->size, table->count);
 	if (table->count == 0) return;
@@ -489,8 +489,8 @@ void ht_print(tHashTable *table)
 
 void ht_set_print_fns(tHashTable *table, tHTPrintFn key_fn, tHTPrintFn val_fn)
 {
-	*(_HERROR) = SUCCESS;
-	if (!table) { *(_HERROR) = NULL_TABLE_ERROR; return; }
+	HERROR = SUCCESS;
+	if (!table) { HERROR = NULL_TABLE_ERROR; return; }
 	table->key_print_fn = key_fn;
 	table->val_print_fn = val_fn;
 }
@@ -499,29 +499,29 @@ tHashTable *ht_create(size_t size,
                       tHTType key_type, size_t key_custom_size,
                       tHTType val_type, size_t val_custom_size)
 {
-	*(_HERROR) = SUCCESS;
-	if (!size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+	HERROR = SUCCESS;
+	if (!size) { HERROR = SIZE_ERROR; return NULL; }
 
 	size_t key_size;
 	if (key_type == HT_UNKNOWN) {
-		if (!key_custom_size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+		if (!key_custom_size) { HERROR = SIZE_ERROR; return NULL; }
 		key_size = key_custom_size;
 	} else {
-		if (key_custom_size)  { *(_HERROR) = SIZE_ERROR; return NULL; }
+		if (key_custom_size)  { HERROR = SIZE_ERROR; return NULL; }
 		key_size = ht_get_type_size(key_type);
 	}
 	size_t val_size;
 	if (val_type == HT_UNKNOWN) {
-		if (!val_custom_size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+		if (!val_custom_size) { HERROR = SIZE_ERROR; return NULL; }
 		val_size = val_custom_size;
 	} else {
-		if (val_custom_size)  { *(_HERROR) = SIZE_ERROR; return NULL; }
+		if (val_custom_size)  { HERROR = SIZE_ERROR; return NULL; }
 		val_size = ht_get_type_size(val_type);
 	}
-	if (!key_size || !val_size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+	if (!key_size || !val_size) { HERROR = SIZE_ERROR; return NULL; }
 
 	tHashTable *table = (tHashTable *)malloc(sizeof(tHashTable));
-	if (!table) { *(_HERROR) = TABLE_CREATE_ERROR; return NULL; }
+	if (!table) { HERROR = TABLE_CREATE_ERROR; return NULL; }
 
 	static const tHashTableVTable vtable = { ht_insert, ht_delete, ht_get, ht_print };
 	table->vtable = &vtable;
@@ -530,7 +530,7 @@ tHashTable *ht_create(size_t size,
 	if (!table->buckets)
 	{
 		free(table);
-		*(_HERROR) = TABLE_CREATE_ERROR;
+		HERROR = TABLE_CREATE_ERROR;
 		return NULL;
 	}
 	table->count = 0;
@@ -545,10 +545,10 @@ tHashTable *ht_create(size_t size,
 
 void ht_free(tHashTable *table)
 {
-	*(_HERROR) = SUCCESS;
+	HERROR = SUCCESS;
 	if (!table)
 	{
-		*(_HERROR) = NULL_TABLE_ERROR;
+		HERROR = NULL_TABLE_ERROR;
 		return;
 	}
 	for (size_t i = 0; i < table->size; i++)
@@ -569,8 +569,7 @@ void ht_free(tHashTable *table)
 
 const char* ht_get_error_msg(void)
 {
-	int8_t *error = _HERROR;
-	switch (*error)
+	switch (HERROR)
 	{
 		case SUCCESS: return "Success";
 		case TABLE_CREATE_ERROR: return "Failed to create the hash table";
