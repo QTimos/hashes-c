@@ -210,4 +210,5 @@ The implementation uses thread-local error storage when supported by the compile
 
 ## License
 
-No license is specified in the provided source files. Add a license file if you intend to distribute the library.
+This project is licensed under the MIT License.
+See the [LICENSE](LICENSE) file for details.
