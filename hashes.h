@@ -1,16 +1,52 @@
 #ifndef HASHES_H
 #define HASHES_H
-#define TABLE_SIZE 50
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 
 struct sNode;
 struct sHashTable;
-struct sHastTableVTable;
+
+/*
+ * Key / value type enum.
+ *
+ *   HT_UNKNOWN  caller supplies the size explicitly (custom structs etc.)
+ *   HT_CHAR     single chars, byte-wise (sizeof(char) = 1)
+ *   HT_STR      C-string CONTENT (sizeof(char) = 1). Pass key_len = strlen(s).
+ *   HT_PTR      pointer value, IDENTITY-based (sizeof(void *)).
+ *
+ * Everything else is a scalar builtin.
+ */
+typedef enum {
+	HT_UNKNOWN = 0,
+	HT_CHAR,
+	HT_STR,
+	HT_BOOL,
+	HT_INT,
+	HT_UINT,
+	HT_LONG,
+	HT_ULONG,
+	HT_LLONG,
+	HT_ULLONG,
+	HT_SHORT,
+	HT_USHORT,
+	HT_FLOAT,
+	HT_DOUBLE,
+	HT_SIZE,
+	HT_PTR,
+	HT_I8,
+	HT_I16,
+	HT_I32,
+	HT_I64,
+	HT_U8,
+	HT_U16,
+	HT_U32,
+	HT_U64
+} tHTType;
 
 typedef struct sNode {
 	const void *key;
@@ -20,19 +56,30 @@ typedef struct sNode {
 	struct sNode *next;
 } tNode;
 
-typedef struct sHastTableVTable {
-	bool (*insert_node)(struct sHashTable *self, const void *key, size_t key_len, const void *value, size_t value_len);
-	bool (*delete_node)(struct sHashTable *self, const void *key, size_t key_len);
-	void* (*get_val)(struct sHashTable *self, const void *key, size_t key_len);
+/* Custom display: called once per key (or value) by ht_print.
+ * Only used when the caller sets key_print_fn / val_print_fn.
+ * Signature must be exactly void (*)(const void *). */
+typedef void (*tHTPrintFn)(const void *item);
+
+typedef struct sHashTableVTable {
+	bool (*ht_insert)(struct sHashTable *self, const void *key, size_t key_len,
+	                  const void *value, size_t value_len);
+	bool (*ht_delete)(struct sHashTable *self, const void *key, size_t key_len);
+	void* (*ht_get)(struct sHashTable *self, const void *key, size_t key_len);
+	void (*ht_print)(struct sHashTable *self);
 } tHashTableVTable;
 
 typedef struct sHashTable {
 	tNode **buckets;
 	size_t size;
 	size_t count;
-	size_t node_val_type_size;
 	size_t node_key_type_size;
-	const tHashTableVTable* vtable;
+	size_t node_val_type_size;
+	tHTType key_type;
+	tHTType val_type;
+	tHTPrintFn key_print_fn;   /* optional; overrides type dispatch for keys */
+	tHTPrintFn val_print_fn;   /* optional; overrides type dispatch for values */
+	const tHashTableVTable *vtable;
 } tHashTable;
 
 typedef enum {
@@ -43,80 +90,142 @@ typedef enum {
 	RESIZE_ERROR = 4,
 	KEY_ERROR = 5,
 	SIZE_ERROR = 6,
-	DUP_ERROR = 7
-} Herrors;
+	DUP_ERROR = 7,
+	NULL_TABLE_ERROR = 8,
+	NULL_KEY_ERROR = 9,
+	NULL_VALUE_ERROR = 10
+} HTerrors;
 
-bool insert_node(tHashTable *self, const void *key, size_t key_len, const void *value, size_t value_len);
-bool delete_node(tHashTable *self, const void *key, size_t key_len);
-void* get_val(tHashTable *self, const void *key, size_t key_len);
-void free_table(tHashTable *table);
-tHashTable *create_table(size_t size, size_t node_key_type_size, size_t node_val_type_size);
+/*
+ * ht_create:
+ *   size                : number of initial buckets (>= 1)
+ *   key_type/val_type   : builtin types, or HT_UNKNOWN for a custom size
+ *   key_custom_size     : 0 when key_type != HT_UNKNOWN, else sizeof(struct...)
+ *   val_custom_size     : same, for the value
+ *
+ * Examples:
+ *   ht_create(50, HT_INT, 0,     HT_INT, 0);                    // int -> int
+ *   ht_create(50, HT_STR, 0,     HT_INT, 0);                    // string -> int
+ *   ht_create(50, HT_UNKNOWN, sizeof(struct point), HT_INT, 0); // struct -> int
+ *
+ * Returns NULL on invalid args or allocation failure; ht_get_error_msg() reports why.
+ */
+tHashTable *ht_create(size_t size,
+                      tHTType key_type, size_t key_custom_size,
+                      tHTType val_type, size_t val_custom_size);
+void ht_free(tHashTable *table);
 
-const char* get_error_msg(void);
-static inline int8_t* get_err(void);
-#define _HERROR (get_err())
-#define HERROR *_HERROR
+bool ht_insert(tHashTable *self, const void *key, size_t key_len,
+               const void *value, size_t value_len);
+void* ht_get(tHashTable *self, const void *key, size_t key_len);
+bool ht_delete(tHashTable *self, const void *key, size_t key_len);
+void ht_print(tHashTable *table);
+void ht_set_print_fns(tHashTable *table, tHTPrintFn key_fn, tHTPrintFn val_fn);
 
-#define HT_INSERT(t, k, kl, v, vl) (t->vtable->insert_node(t, k, kl, v, vl))
-#define HT_GET(t, k, kl) (t->vtable->get_val(t, k, kl))
-#define HT_DEL(t, k, kl) (t->vtable->delete_node(t, k ,kl))
+/*
+ * ht_get_error_msg reads the error state of the most recent ht_* call.
+ * Every public ht_* function resets the slot to SUCCESS on entry and sets
+ * it to a specific code on failure, so the slot describes "this call"
+ * without the caller needing to clear it manually.
+ *
+ * The slot is per-thread when the compiler supports thread-local storage
+ * (see HT_THREAD_SAFE_ERROR_STATE). When that flag is 0, the slot is a
+ * process-global static and these reads are NOT thread-safe.
+ */
+const char* ht_get_error_msg(void);
 
-/* Type Sizes */
-#define H_TYPE(T)    sizeof(T)
-#define H_PTR        sizeof(void *)
-#define H_SIZE       sizeof(size_t)
+#define HT_INSERT(t, k, kl, v, vl) \
+    ((t) ? (t)->vtable->ht_insert((t), (k), (kl), (v), (vl)) : false)
+#define HT_GET(t, k, kl) \
+    ((t) ? (t)->vtable->ht_get((t), (k), (kl)) : NULL)
+#define HT_DEL(t, k, kl) \
+    ((t) ? (t)->vtable->ht_delete((t), (k), (kl)) : false)
+#define HT_PRINT(t) \
+    ((t) ? (t)->vtable->ht_print((t)) : (void)0)
 
-#define H_CHAR       sizeof(char)
-#define H_STR        sizeof(char)
-#define H_BOOL       sizeof(bool)
+/* Generic type-size macro, for HT_UNKNOWN custom types. */
+#define HT_TYPE_SIZE(T)   sizeof(T)
 
-#define H_SHORT      sizeof(short)
-#define H_USHORT     sizeof(unsigned short)
-#define H_INT        sizeof(int)
-#define H_UINT       sizeof(unsigned int)
-#define H_LONG       sizeof(long)
-#define H_ULONG      sizeof(unsigned long)
-#define H_LLONG      sizeof(long long)
-#define H_ULLONG     sizeof(unsigned long long)
-
-#define H_FLOAT      sizeof(float)
-#define H_DOUBLE     sizeof(double)
-
-#define H_I8         sizeof(int8_t)
-#define H_I16        sizeof(int16_t)
-#define H_I32        sizeof(int32_t)
-#define H_I64        sizeof(int64_t)
-#define H_U8         sizeof(uint8_t)
-#define H_U16        sizeof(uint16_t)
-#define H_U32        sizeof(uint32_t)
-#define H_U64        sizeof(uint64_t)
-
-/* Cast Helpers */
+/* Cast Helpers (unchanged) */
 #define CAST_GEN(x)     ((void *)(x))
 #define CAST_AS(T, x)   (*(T *)(x))
 #define CAST_PTR(T, x)  ((T *)(x))
-
 #define CAST_STR(x)     ((char *)(x))
 #define CAST_CHAR(x)    (*(char *)(x))
 #define CAST_BOOL(x)    (*(bool *)(x))
 #define CAST_SIZE(x)    (*(size_t *)(x))
-
 #define CAST_INT(x)     (*(int *)(x))
 #define CAST_UINT(x)    (*(unsigned int *)(x))
 #define CAST_LONG(x)    (*(long *)(x))
 #define CAST_LLONG(x)   (*(long long *)(x))
 #define CAST_INT_ARR(x) ((int *)(x))
-
 #define CAST_FLOAT(x)   (*(float *)(x))
 #define CAST_DOUBLE(x)  (*(double *)(x))
 
+/* thread-local error state */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define HT_THREAD_LOCAL _Thread_local
+#  define HT_THREAD_SAFE_ERROR_STATE 1
+#elif defined(__GNUC__)
+#  define HT_THREAD_LOCAL __thread
+#  define HT_THREAD_SAFE_ERROR_STATE 1
+#elif defined(_MSC_VER)
+#  define HT_THREAD_LOCAL __declspec(thread)
+#  define HT_THREAD_SAFE_ERROR_STATE 1
+#else
+#  define HT_THREAD_LOCAL /* empty / not thread safe branch */
+#  define HT_THREAD_SAFE_ERROR_STATE 0
+#endif
 
+#if !HT_THREAD_SAFE_ERROR_STATE && !defined(HT_ACCEPT_UNSAFE_THREAD_STATE)
+#  if defined(__GNUC__) || defined(__clang__) || \
+      (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L)
+#    warning "HT: error state is not thread-local on this toolchain (not thread-safe). Define HT_ACCEPT_UNSAFE_THREAD_STATE to silence."
+#  elif defined(_MSC_VER)
+#    pragma message("HT: error state is not thread-local on this toolchain (not thread-safe). Define HT_ACCEPT_UNSAFE_THREAD_STATE to silence.")
+#  endif
+#endif
 
 #ifdef HTABLE_IMPLEMENTATION
+
+static HT_THREAD_LOCAL int8_t ht_err_state = 0;
+
 static inline int8_t* get_err(void)
 {
-	static int8_t err = 0;
-	return &err;
+	return &ht_err_state;
+}
+#define _HERROR (get_err())
+#define HERROR *_HERROR
+
+static size_t ht_get_type_size(tHTType type)
+{
+	switch (type) {
+		case HT_CHAR:   return sizeof(char);
+		case HT_STR:    return sizeof(char);
+		case HT_BOOL:   return sizeof(bool);
+		case HT_INT:    return sizeof(int);
+		case HT_UINT:   return sizeof(unsigned int);
+		case HT_LONG:   return sizeof(long);
+		case HT_ULONG:  return sizeof(unsigned long);
+		case HT_LLONG:  return sizeof(long long);
+		case HT_ULLONG: return sizeof(unsigned long long);
+		case HT_SHORT:  return sizeof(short);
+		case HT_USHORT: return sizeof(unsigned short);
+		case HT_FLOAT:  return sizeof(float);
+		case HT_DOUBLE: return sizeof(double);
+		case HT_SIZE:   return sizeof(size_t);
+		case HT_PTR:    return sizeof(void *);
+		case HT_I8:     return sizeof(int8_t);
+		case HT_I16:    return sizeof(int16_t);
+		case HT_I32:    return sizeof(int32_t);
+		case HT_I64:    return sizeof(int64_t);
+		case HT_U8:     return sizeof(uint8_t);
+		case HT_U16:    return sizeof(uint16_t);
+		case HT_U32:    return sizeof(uint32_t);
+		case HT_U64:    return sizeof(uint64_t);
+		case HT_UNKNOWN:
+		default:        return 0;
+	}
 }
 
 static void *_duplicate_val(const void *data, size_t len, size_t type_size)
@@ -124,70 +233,121 @@ static void *_duplicate_val(const void *data, size_t len, size_t type_size)
 	if (!data || !len || !type_size) return NULL;
 	if (len > SIZE_MAX / type_size) return NULL;
 	size_t size_in_bytes = len * type_size;
-	uint8_t *dup = malloc(sizeof(uint8_t) * size_in_bytes);
+	uint8_t *dup = malloc(size_in_bytes);
 	if (!dup) return NULL;
 	return memcpy(dup, data, size_in_bytes);
 }
 
-static void _reset_error(void)
-{
-		int8_t *err = _HERROR;
-		*err = 0;
-}
-
 static uint32_t _hash(const void *key, size_t key_len_in_bytes, size_t size)
 {
-	uint8_t *k = (uint8_t *)key;
+	const uint8_t *k = (const uint8_t *)key;
 	uint32_t hash = 0;
 
 	for (size_t i = 0; i < key_len_in_bytes; i++)
 		hash = (hash * 31) + k[i];
-	return (hash % size);
+	return (uint32_t)(hash % size);
 }
 
-static void _refresh_nodes(tHashTable *table, tNode ***new_buckets, size_t new_size)
+static void _refresh_nodes(tHashTable *table, tNode **new_buckets, size_t new_size)
 {
-	size_t i = 0;
-	size_t new_index;
 	tNode *node;
 	tNode *next_node;
 
-	while(i < table->size)
+	for (size_t i = 0; i < table->size; i++)
 	{
 		node = table->buckets[i];
 		while (node)
 		{
 			next_node = node->next;
-			new_index = _hash(node->key, (node->key_len * table->node_key_type_size), new_size);
-			node->next = (*new_buckets)[new_index];
-			(*new_buckets)[new_index] = node;
+			size_t new_index = _hash(node->key,
+			                         node->key_len * table->node_key_type_size,
+			                         new_size);
+			node->next = new_buckets[new_index];
+			new_buckets[new_index] = node;
 			node = next_node;
 		}
-		i++;
 	}
 }
 
 static bool _resize_table(tHashTable *table)
 {
+	if (table->size > SIZE_MAX / 2)
+	{
+		*(_HERROR) = RESIZE_ERROR;
+		return false;
+	}
 	size_t new_size = table->size * 2;
 	tNode **new_buckets = (tNode **)calloc(new_size, sizeof(tNode *));
 	if (!new_buckets)
 	{
-		int8_t *err = _HERROR;
-		*err = RESIZE_ERROR;
-		return (false);
+		*(_HERROR) = RESIZE_ERROR;
+		return false;
 	}
-	_refresh_nodes(table, &new_buckets, new_size);
+	_refresh_nodes(table, new_buckets, new_size);
 	free(table->buckets);
 	table->buckets = new_buckets;
 	table->size = new_size;
-	return (true);
+	return true;
 }
 
-bool insert_node(tHashTable *self, const void *key, size_t key_len, const void *value, size_t value_len)
+/* Print one stored item (key or value): either via user fn, or by type dispatch. */
+static void ht_print_item(tHTType type, size_t elem_size,
+                          const void *data, size_t count,
+                          tHTPrintFn fn)
 {
-	if (!self || !key || !key_len || !value || !value_len || !self->size) return false;
-	_reset_error();
+	if (fn) {
+		fn(data);
+		return;
+	}
+	if (type == HT_UNKNOWN) {
+		printf("<%zu bytes>", count * elem_size);
+		return;
+	}
+	if (type == HT_STR) {
+		size_t n = count * elem_size;
+		printf("\"%.*s\"", (int)n, (const char *)data);
+		return;
+	}
+	for (size_t i = 0; i < count; i++) {
+		const void *p = (const uint8_t *)data + i * elem_size;
+		if (i > 0) printf(" ");
+		switch (type) {
+			case HT_CHAR:   printf("'%c'", *(const char *)p); break;
+			case HT_BOOL:   printf("%s", *(const bool *)p ? "true" : "false"); break;
+			case HT_INT:    printf("%d", *(const int *)p); break;
+			case HT_UINT:   printf("%u", *(const unsigned int *)p); break;
+			case HT_LONG:   printf("%ld", *(const long *)p); break;
+			case HT_ULONG:  printf("%lu", *(const unsigned long *)p); break;
+			case HT_LLONG:  printf("%lld", *(const long long *)p); break;
+			case HT_ULLONG: printf("%llu", *(const unsigned long long *)p); break;
+			case HT_SHORT:  printf("%hd", *(const short *)p); break;
+			case HT_USHORT: printf("%hu", *(const unsigned short *)p); break;
+			case HT_FLOAT:  printf("%f", *(const float *)p); break;
+			case HT_DOUBLE: printf("%f", *(const double *)p); break;
+			case HT_SIZE:   printf("%zu", *(const size_t *)p); break;
+			case HT_PTR:    printf("%p", *(void * const *)p); break;
+			case HT_I8:     printf("%" PRId8,  *(const int8_t *)p);  break;
+			case HT_I16:    printf("%" PRId16, *(const int16_t *)p); break;
+			case HT_I32:    printf("%" PRId32, *(const int32_t *)p); break;
+			case HT_I64:    printf("%" PRId64, *(const int64_t *)p); break;
+			case HT_U8:     printf("%" PRIu8,  *(const uint8_t *)p);  break;
+			case HT_U16:    printf("%" PRIu16, *(const uint16_t *)p); break;
+			case HT_U32:    printf("%" PRIu32, *(const uint32_t *)p); break;
+			case HT_U64:    printf("%" PRIu64, *(const uint64_t *)p); break;
+			default:        printf("?"); break;
+		}
+	}
+}
+
+bool ht_insert(tHashTable *self, const void *key, size_t key_len,
+               const void *value, size_t value_len)
+{
+	*(_HERROR) = SUCCESS;
+	if (!self)                { *(_HERROR) = NULL_TABLE_ERROR;       return false; }
+	if (!key || !key_len)     { *(_HERROR) = NULL_KEY_ERROR;         return false; }
+	if (!value || !value_len) { *(_HERROR) = NULL_VALUE_ERROR;       return false; }
+	if (!self->size)          { *(_HERROR) = DIVBYZERO_INSERT_ERROR; return false; }
+
 	uint32_t index;
 	tNode *new_node;
 	tNode *node;
@@ -195,185 +355,237 @@ bool insert_node(tHashTable *self, const void *key, size_t key_len, const void *
 
 	if (l_factor > 0.75)
 		if (!_resize_table(self))
-			return (false);
-	index = _hash(key, (key_len * self->node_key_type_size), self->size);
+			return false;
+
+	index = _hash(key, key_len * self->node_key_type_size, self->size);
 	node = self->buckets[index];
 	while (node)
 	{
-		if (node->key_len == key_len && !memcmp(node->key, key, (self->node_key_type_size * key_len)))
+		if (node->key_len == key_len &&
+		    !memcmp(node->key, key, self->node_key_type_size * key_len))
 		{
-			void *tmp_val = _duplicate_val(value, value_len, self->node_val_type_size); 
+			void *tmp_val = _duplicate_val(value, value_len, self->node_val_type_size);
 			if (!tmp_val)
 			{
-				int8_t *err = _HERROR;
-				*err = DUP_ERROR;
-				return (false);
+				*(_HERROR) = DUP_ERROR;
+				return false;
 			}
 			free(node->value);
 			node->value = tmp_val;
 			node->value_len = value_len;
-			return (true);
+			return true;
 		}
 		node = node->next;
 	}
+
 	new_node = (tNode *)malloc(sizeof(tNode));
 	if (!new_node)
 	{
-		int8_t *err = _HERROR;
-		*err = INSERT_ERROR;
-		return (false);
+		*(_HERROR) = INSERT_ERROR;
+		return false;
 	}
 	new_node->key = _duplicate_val(key, key_len, self->node_key_type_size);
 	if (!new_node->key)
 	{
 		free(new_node);
-		int8_t *err = _HERROR;
-		*err = DUP_ERROR;
-		return (false);
+		*(_HERROR) = DUP_ERROR;
+		return false;
 	}
 	new_node->value = _duplicate_val(value, value_len, self->node_val_type_size);
 	if (!new_node->value)
 	{
 		free((void *)new_node->key);
 		free(new_node);
-		int8_t *err = _HERROR;
-		*err = DUP_ERROR;
-		return (false);
+		*(_HERROR) = DUP_ERROR;
+		return false;
 	}
 	new_node->key_len = key_len;
 	new_node->value_len = value_len;
 	new_node->next = self->buckets[index];
 	self->buckets[index] = new_node;
 	self->count++;
-	return (true);
+	return true;
 }
 
-void* get_val(tHashTable *self, const void *key, size_t key_len)
+void* ht_get(tHashTable *self, const void *key, size_t key_len)
 {
-	_reset_error();
-	if (!self || !key || !key_len || !self->size) return NULL;
-	uint32_t index = _hash(key, (key_len * self->node_key_type_size), self->size);
-	tNode* node = self->buckets[index];
-	void* value;
+	*(_HERROR) = SUCCESS;
+	if (!self)            { *(_HERROR) = NULL_TABLE_ERROR;       return NULL; }
+	if (!key || !key_len) { *(_HERROR) = NULL_KEY_ERROR;         return NULL; }
+	if (!self->size)      { *(_HERROR) = DIVBYZERO_INSERT_ERROR; return NULL; }
+
+	uint32_t index = _hash(key, key_len * self->node_key_type_size, self->size);
+	tNode *node = self->buckets[index];
 
 	while (node)
 	{
-		if (node->key_len == key_len && !memcmp(node->key, key, (self->node_key_type_size * key_len)))
-		{
-			value = node->value;
-			return (value);
-		}
+		if (node->key_len == key_len &&
+		    !memcmp(node->key, key, self->node_key_type_size * key_len))
+			return node->value;
 		node = node->next;
 	}
-	int8_t *err = _HERROR;
-	*err = KEY_ERROR;
-	return (NULL);
+	*(_HERROR) = KEY_ERROR;
+	return NULL;
 }
 
-bool delete_node(tHashTable *self, const void *key, size_t key_len)
+bool ht_delete(tHashTable *self, const void *key, size_t key_len)
 {
-	_reset_error();
-	if (!self || !key || !key_len || !self->size) return false;
-	uint32_t index = _hash(key, (key_len * self->node_key_type_size), self->size);
+	*(_HERROR) = SUCCESS;
+	if (!self)            { *(_HERROR) = NULL_TABLE_ERROR;       return false; }
+	if (!key || !key_len) { *(_HERROR) = NULL_KEY_ERROR;         return false; }
+	if (!self->size)      { *(_HERROR) = DIVBYZERO_INSERT_ERROR; return false; }
+
+	uint32_t index = _hash(key, key_len * self->node_key_type_size, self->size);
 	tNode *curr = self->buckets[index];
 	tNode *prev = NULL;
 
 	while (curr)
 	{
-		if (curr->key_len == key_len && !memcmp(key, curr->key, (self->node_key_type_size * key_len)))
+		if (curr->key_len == key_len &&
+		    !memcmp(key, curr->key, self->node_key_type_size * key_len))
 		{
 			if (prev)
 				prev->next = curr->next;
 			else
 				self->buckets[index] = curr->next;
 			self->count--;
-			free((void*)curr->key);
+			free((void *)curr->key);
 			free(curr->value);
 			free(curr);
-			return (true);
+			return true;
 		}
 		prev = curr;
 		curr = curr->next;
 	}
-	return (false);
+	*(_HERROR) = KEY_ERROR;
+	return false;
 }
 
-tHashTable *create_table(size_t size, size_t node_key_type_size, size_t node_val_type_size)
+void ht_print(tHashTable *table)
 {
-	_reset_error();
-	if (!size || !node_key_type_size || !node_val_type_size)
+	*(_HERROR) = SUCCESS;
+	if (!table) { *(_HERROR) = NULL_TABLE_ERROR; return; }
+
+	printf("HashTable(size=%zu, count=%zu)\n", table->size, table->count);
+	if (table->count == 0) return;
+
+	printf("{\n");
+	for (size_t i = 0; i < table->size; i++)
 	{
-		int8_t *err = _HERROR;
-		*err = SIZE_ERROR;
-		return (NULL);
+		tNode *node = table->buckets[i];
+		while (node)
+		{
+			// printf("  [%zu] ", i);
+			ht_print_item(table->key_type, table->node_key_type_size,
+			              node->key, node->key_len, table->key_print_fn);
+			printf(": ");
+			ht_print_item(table->val_type, table->node_val_type_size, node->value, node->value_len, table->val_print_fn);
+			printf("\n");
+			node = node->next;
+		}
 	}
+	printf("}\n");
+}
+
+void ht_set_print_fns(tHashTable *table, tHTPrintFn key_fn, tHTPrintFn val_fn)
+{
+	*(_HERROR) = SUCCESS;
+	if (!table) { *(_HERROR) = NULL_TABLE_ERROR; return; }
+	table->key_print_fn = key_fn;
+	table->val_print_fn = val_fn;
+}
+
+tHashTable *ht_create(size_t size,
+                      tHTType key_type, size_t key_custom_size,
+                      tHTType val_type, size_t val_custom_size)
+{
+	*(_HERROR) = SUCCESS;
+	if (!size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+
+	size_t key_size;
+	if (key_type == HT_UNKNOWN) {
+		if (!key_custom_size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+		key_size = key_custom_size;
+	} else {
+		if (key_custom_size)  { *(_HERROR) = SIZE_ERROR; return NULL; }
+		key_size = ht_get_type_size(key_type);
+	}
+	size_t val_size;
+	if (val_type == HT_UNKNOWN) {
+		if (!val_custom_size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+		val_size = val_custom_size;
+	} else {
+		if (val_custom_size)  { *(_HERROR) = SIZE_ERROR; return NULL; }
+		val_size = ht_get_type_size(val_type);
+	}
+	if (!key_size || !val_size) { *(_HERROR) = SIZE_ERROR; return NULL; }
+
 	tHashTable *table = (tHashTable *)malloc(sizeof(tHashTable));
-	if (!table)
-	{
-		int8_t *err = _HERROR;
-		*err = TABLE_CREATE_ERROR;
-		return (NULL);
-	}
-	static const tHashTableVTable vtable = {insert_node, delete_node, get_val};
+	if (!table) { *(_HERROR) = TABLE_CREATE_ERROR; return NULL; }
+
+	static const tHashTableVTable vtable = { ht_insert, ht_delete, ht_get, ht_print };
 	table->vtable = &vtable;
 	table->size = size;
 	table->buckets = (tNode **)calloc(size, sizeof(tNode *));
 	if (!table->buckets)
 	{
 		free(table);
-		int8_t *err = _HERROR;
-		*err = TABLE_CREATE_ERROR;
-		return (NULL);
+		*(_HERROR) = TABLE_CREATE_ERROR;
+		return NULL;
 	}
 	table->count = 0;
-	table->node_key_type_size = node_key_type_size;
-	table->node_val_type_size = node_val_type_size;
-	return (table);
+	table->node_key_type_size = key_size;
+	table->node_val_type_size = val_size;
+	table->key_type = key_type;
+	table->val_type = val_type;
+	table->key_print_fn = NULL;
+	table->val_print_fn = NULL;
+	return table;
 }
 
-void free_table(tHashTable *table)
+void ht_free(tHashTable *table)
 {
-	if (!table) return;
-	size_t i = 0;
-	tNode *curr;
-	tNode *prev;
-
-	while(i < table->size)
+	*(_HERROR) = SUCCESS;
+	if (!table)
 	{
-		curr = table->buckets[i];
+		*(_HERROR) = NULL_TABLE_ERROR;
+		return;
+	}
+	for (size_t i = 0; i < table->size; i++)
+	{
+		tNode *curr = table->buckets[i];
 		while (curr)
 		{
-			prev = curr;
-			curr = curr->next;
-			free((void*)prev->key);
-			free(prev->value);
-			free(prev);
+			tNode *next = curr->next;
+			free((void *)curr->key);
+			free(curr->value);
+			free(curr);
+			curr = next;
 		}
-		i++;
 	}
 	free(table->buckets);
 	free(table);
 }
 
-const char* get_error_msg(void)
+const char* ht_get_error_msg(void)
 {
 	int8_t *error = _HERROR;
-
 	switch (*error)
 	{
-		case SUCCESS: return ("Success");
-		case TABLE_CREATE_ERROR: return ("Failed to create the hash table");
-		case DIVBYZERO_INSERT_ERROR:
-			 return ("Division by zero while inserting, likely cause is table->size = 0");
-		case INSERT_ERROR: return ("Failed to insert value to table");
-		case RESIZE_ERROR: return ("Failed to resize table");
-		case KEY_ERROR: return ("Unknown key passed to get_node()");
-		case SIZE_ERROR: return ("Can't create a table with size '0'");
-		case DUP_ERROR: return ("Failed to copy a value or key");
-		default: return ("Unknown internal system error");
+		case SUCCESS: return "Success";
+		case TABLE_CREATE_ERROR: return "Failed to create the hash table";
+		case DIVBYZERO_INSERT_ERROR: return "Table size is zero — operation would divide by zero";
+		case INSERT_ERROR: return "Failed to insert value into table";
+		case RESIZE_ERROR: return "Failed to resize table";
+		case KEY_ERROR: return "Key not found in table";
+		case SIZE_ERROR: return "Invalid type/size argument to ht_create";
+		case DUP_ERROR: return "Failed to copy a value or key";
+		case NULL_TABLE_ERROR: return "The table passed is NULL";
+		case NULL_KEY_ERROR: return "The key passed is NULL or has length 0";
+		case NULL_VALUE_ERROR: return "The value passed is NULL or has length 0";
+		default: return "Unknown internal system error";
 	}
 }
 #endif
-
 
 #endif
