@@ -48,6 +48,26 @@ typedef enum {
 	HT_U64
 } tHTType;
 
+typedef enum
+{
+	SUCCESS = 0,
+	TABLE_CREATE_ERROR = 1,
+	DIVBYZERO_INSERT_ERROR = 2,
+	INSERT_ERROR = 3,
+	RESIZE_ERROR = 4,
+	KEY_ERROR = 5,
+	SIZE_ERROR = 6,
+	DUP_ERROR = 7,
+	NULL_TABLE_ERROR = 8,
+	NULL_KEY_ERROR = 9,
+	NULL_VALUE_ERROR = 10
+} HTErrors;
+
+/* Custom display: called once per key (or value) by ht_print.
+ * Only used when the caller sets key_print_fn / val_print_fn.
+ * Signature must be exactly void (*)(const void *). */
+typedef void (*tHTPrintFn)(const void *item);
+
 typedef struct sNode
 {
 	const void *key;
@@ -57,15 +77,9 @@ typedef struct sNode
 	struct sNode *next;
 } tNode;
 
-/* Custom display: called once per key (or value) by ht_print.
- * Only used when the caller sets key_print_fn / val_print_fn.
- * Signature must be exactly void (*)(const void *). */
-typedef void (*tHTPrintFn)(const void *item);
-
 typedef struct sHashTableVTable
 {
-	bool (*ht_insert)(struct sHashTable *self, const void *key, size_t key_len,
-	                  const void *value, size_t value_len);
+	bool (*ht_insert)(struct sHashTable *self, const void *key, size_t key_len, const void *value, size_t value_len);
 	bool (*ht_delete)(struct sHashTable *self, const void *key, size_t key_len);
 	void* (*ht_get)(struct sHashTable *self, const void *key, size_t key_len);
 	void (*ht_print)(struct sHashTable *self);
@@ -85,21 +99,6 @@ typedef struct sHashTable
 	const tHashTableVTable *vtable;
 } tHashTable;
 
-typedef enum
-{
-	SUCCESS = 0,
-	TABLE_CREATE_ERROR = 1,
-	DIVBYZERO_INSERT_ERROR = 2,
-	INSERT_ERROR = 3,
-	RESIZE_ERROR = 4,
-	KEY_ERROR = 5,
-	SIZE_ERROR = 6,
-	DUP_ERROR = 7,
-	NULL_TABLE_ERROR = 8,
-	NULL_KEY_ERROR = 9,
-	NULL_VALUE_ERROR = 10
-} HTErrors;
-
 /*
  * ht_create:
  *   size                : number of initial buckets (>= 1)
@@ -114,18 +113,6 @@ typedef enum
  *
  * Returns NULL on invalid args or allocation failure; ht_get_error_msg() reports why.
  */
-tHashTable *ht_create(size_t size,
-                      tHTType key_type, size_t key_custom_size,
-                      tHTType val_type, size_t val_custom_size);
-void ht_free(tHashTable *table);
-
-bool ht_insert(tHashTable *self, const void *key, size_t key_len,
-               const void *value, size_t value_len);
-void* ht_get(tHashTable *self, const void *key, size_t key_len);
-bool ht_delete(tHashTable *self, const void *key, size_t key_len);
-void ht_print(tHashTable *table);
-void ht_set_print_fns(tHashTable *table, tHTPrintFn key_fn, tHTPrintFn val_fn);
-
 /*
  * ht_get_error_msg reads the error state of the most recent ht_* call.
  * Every public ht_* function resets the slot to SUCCESS on entry and sets
@@ -136,41 +123,25 @@ void ht_set_print_fns(tHashTable *table, tHTPrintFn key_fn, tHTPrintFn val_fn);
  * (see HT_THREAD_SAFE_ERROR_STATE). When that flag is 0, the slot is a
  * process-global static and these reads are NOT thread-safe.
  */
+tHashTable *ht_create(size_t size, tHTType key_type, size_t key_custom_size, tHTType val_type, size_t val_custom_size);
+void ht_free(tHashTable *table);
+bool ht_insert(tHashTable *self, const void *key, size_t key_len, const void *value, size_t value_len);
+void* ht_get(tHashTable *self, const void *key, size_t key_len);
+bool ht_delete(tHashTable *self, const void *key, size_t key_len);
+void ht_print(tHashTable *table);
+void ht_set_print_fns(tHashTable *table, tHTPrintFn key_fn, tHTPrintFn val_fn);
 const char* ht_get_error_msg(void);
 
-#define HT_INSERT(t, k, kl, v, vl) \
-	((t) ? ht_insert((t), (k), (kl), (v), (vl)) : false)
-#define HT_GET(t, k, kl) \
-	((t) ? ht_get((t), (k), (kl)) : NULL)
-#define HT_DEL(t, k, kl) \
-	((t) ? ht_delete((t), (k), (kl)) : false)
-#define HT_PRINT(t) \
-	((t) ? ht_print((t)) : (void)0)
+// macros to the functions and a wrapper macro for sizeof()
+#define HT_CREATE(s, kt, ks, vt, vs) (ht_create((s), (kt), (ks), (vt), (vs)))
 #define HT_FREE(t) (ht_free(t))
-#define HT_CREATE(s, kt, ks, vt, vs) \
-	(ht_create((s), (kt), (ks), (vt), (vs)))
-#define HT_SET_PRINT_FNS(t, kf, vf) \
-	(ht_set_print_fns((t), (kf), (vf)))
+#define HT_INSERT(t, k, kl, v, vl) ((t) ? ht_insert((t), (k), (kl), (v), (vl)) : false)
+#define HT_GET(t, k, kl) ((t) ? ht_get((t), (k), (kl)) : NULL)
+#define HT_DEL(t, k, kl) ((t) ? ht_delete((t), (k), (kl)) : false)
+#define HT_PRINT(t) ((t) ? ht_print((t)) : (void)0)
+#define HT_SET_PRINT_FNS(t, kf, vf) (ht_set_print_fns((t), (kf), (vf)))
 #define HT_GET_ERROR_MSG() ht_get_error_msg()
-
-/* Generic type-size macro, for HT_UNKNOWN custom types. */
 #define HT_TYPE_SIZE(T)   sizeof(T)
-
-/* Cast Helpers (unchanged) */
-#define CAST_GEN(x)     ((void *)(x))
-#define CAST_AS(T, x)   (*(T *)(x))
-#define CAST_PTR(T, x)  ((T *)(x))
-#define CAST_STR(x)     ((char *)(x))
-#define CAST_CHAR(x)    (*(char *)(x))
-#define CAST_BOOL(x)    (*(bool *)(x))
-#define CAST_SIZE(x)    (*(size_t *)(x))
-#define CAST_INT(x)     (*(int *)(x))
-#define CAST_UINT(x)    (*(unsigned int *)(x))
-#define CAST_LONG(x)    (*(long *)(x))
-#define CAST_LLONG(x)   (*(long long *)(x))
-#define CAST_INT_ARR(x) ((int *)(x))
-#define CAST_FLOAT(x)   (*(float *)(x))
-#define CAST_DOUBLE(x)  (*(double *)(x))
 
 /* thread-local error state */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
@@ -196,10 +167,10 @@ const char* ht_get_error_msg(void);
 #  endif
 #endif
 
+
 #ifdef HTABLE_IMPLEMENTATION
 
 static HT_THREAD_LOCAL int8_t ht_err_state = 0;
-
 static inline int8_t* get_err(void)
 {
 	return &ht_err_state;
@@ -300,10 +271,8 @@ static bool _resize_table(tHashTable *table)
 	return true;
 }
 
-/* Print one stored item (key or value): either via user fn, or by type dispatch. */
-static void ht_print_item(tHTType type, size_t elem_size,
-                          const void *data, size_t count,
-                          tHTPrintFn fn)
+// Print one stored item (key or value): either via user fn, or by type dispatch.
+static void ht_print_item(tHTType type, size_t elem_size, const void *data, size_t count, tHTPrintFn fn)
 {
 	if (fn)
 	{
